@@ -1,0 +1,134 @@
+---
+#Over representation of gen/cell barcodes in 10x hs4000 sequencing 
+###fabiola curion 
+###curion@well.ox.ac.uk
+---
+```{r}
+library(jsonlite)
+library(Seurat)
+library(SuperExactTest)
+library(ggplot2)
+setwd("/gpfs2/well/resgen/users/curion/10X/misallocation")
+source("barcodeTest.R") #Written by Karsten Bach, edited by Jonny Griffiths 11/6/17, edited by fabiolacurion on 18/7/2017
+```
+
+
+```{r}
+lib<-fromJSON("samples.json")
+
+sampList<-sapply(lib[[1]][[6]],"[[", 'samples')
+names(sampList) <-lib[[1]][[1]]
+
+lapply(sampList, function(x) sapply(x,"[","path"))
+
+dir.exists(unname(unlist(lapply(sampList, function(x) sapply(x,"[","path")))))
+#lanesName<-sapply(lib[[1]][[6]],"[[", 'laneId')
+for(n in 1:length(sampList)) { 
+  print("______________________")
+ print(paste("index n of the sampList", n))
+  for (i in 1:length(sampList[[n]])) { #this is the lane (i is the index of the lane within the flowcell, how many lanes are there?)
+    print(paste("lane no", i))
+    cell.bcs <- sample.list <- sample.list <- sample.gbm <- list()
+    for (r in 1:nrow(sampList[[n]][[i]])) { #this is the lane level (r is the index of the sample within the lane)
+      sample.data <- Read10X(sampList[[n]][[i]] [r,"path"])
+      print(paste("path index r no:", r))
+      sample            <- new("seurat", raw.data=sample.data)
+      sample.list[[r]]  <- Setup(sample, min.cells=0, min.genes=0, do.scale=F, do.center=F, do.logNormalize=F, total.expr=1e4, 
+                             project=sampList[[n]][[i]][r,"sample"])
+      print(paste("done",sampList[[n]][[i]][r,"path"] ))
+      sample.gbm[[r]] <- sample.list[[r]]@data.info
+    
+      # Extract gene-barcode dataframe and keep it for later
+      names(sample.gbm)[[r]] <- as.character(unique(sample.gbm[[r]]$orig.ident))
+      print(names(sample.gbm)[[r]])
+      mm<-sample.gbm[[r]][order(sample.gbm[[r]]$nUMI, decreasing=T),]
+      cell.bcs[[r]] <- rownames(mm[1:sampList[[n]][[i]][r,"cells"],])
+      names(cell.bcs)[[r]]<- as.character(unique(mm$orig.ident))
+      print(names(sample.gbm)[[r]])
+      
+      print(paste("Now finished uploading sample", r))
+    }  
+    #cumulative plot
+        df<-sample.gbm
+        sorted_dataframes_list <- lapply(df, function(s) {s[order(s$nUMI, decreasing=T),]})
+      
+        for(a in 1:length(sorted_dataframes_list)){
+              sorted_dataframes_list[[a]]$barcodes <- seq(1:nrow(sorted_dataframes_list[[a]]))
+            }
+
+            df<-do.call("rbind",sorted_dataframes_list)
+            colnames(df)
+            xint<-(range(unlist(lapply(cell.bcs, length))))
+      
+            print(ggplot(df, aes(y=nUMI, x=barcodes, col = orig.ident  ) ) + geom_line( ) + 
+              scale_y_log10(breaks=c(1,10,100,1000,10000, 100000)) + 
+              scale_x_log10(breaks = c(1,10,100,1000,10000,100000)) + #+ geom_point()
+              geom_vline(aes(xintercept=xint[1]), linetype=4, colour="black") + 
+              geom_vline(aes(xintercept=xint[2]), linetype=4, colour="black") )
+
+     
+     if (length(cell.bcs) ==2 ) { 
+     lanen<-unique(sapply(strsplit(names(cell.bcs),"_"),"[[",1))
+     
+    #hypergeometric test, cell barcodes
+     barcodes<-unlist(cell.bcs)
+     ss<-length(cell.bcs)
+     print ( paste("processing", lanen, ss, "samples"))
+     ll<-c(unlist(lapply(cell.bcs, length)))
+     samples<- rep(1:ss, ll)  
+     print(compare(barcodes,samples))
+     
+     #hypergeometric test, gem barcodes
+     gem.bcs<-sapply(sample.gbm, rownames)
+     barcodes<-unlist(gem.bcs)
+     ss<-length(gem.bcs)
+     ll<-c(unlist(lapply(cell.bcs, length)))
+     samples<- rep(1:ss, ll)  
+     print(compare(barcodes,samples))
+    }
+    if (length(cell.bcs)>2 ){
+          lanen<-unique(sapply(strsplit(names(cell.bcs),"_"),"[[",1))
+    
+      #calculate overRepresentation of intersection between cell.barcodes (those called "cell" by imposing a threshold on UMI count)
+          total=737280
+          res=supertest(cell.bcs, n=total)
+          
+          print (paste( "this is lane: " ,lanen))
+          
+          plot(res, sort.by="size", main = paste ( "Lane", lanen, "Cell barcodes"))  
+          plot(res, Layout="landscape", degree=2:length(cell.bcs), sort.by="size", main = paste('Lane', lanen, " summary"))  
+          print(summary(res))
+     
+      #calculate overRepresentation of intersection between GEM.barcodes (ALL)
+          
+          gem.bcs<-sapply(sample.gbm, rownames)
+          res=supertest(gem.bcs, n=total)
+          print(summary(res))
+          
+          print (paste( "this is lane: " ,lanen))
+          
+          plot(res, sort.by="size", main = paste ( "Lane", lanen, "Cell barcodes"))  
+          plot(res, Layout="landscape", degree=2:length(cell.bcs), sort.by="size", main = paste('Lane', lanen, " summary")) 
+          
+          ov4.bcs<-summary(res, degree=length(cell.bcs))
+          ov4.bcs<- strsplit(ov4.bcs$Table$Elements,split=", ")[[1]]
+
+print("ggplotting...")
+          umiData<-sapply(sample.gbm,function(i) i[rownames(i) %in% ov4.bcs, 'nUMI'])
+          rownames(umiData)<-ov4.bcs
+          box <-  reshape2::melt(umiData)
+          print(ggplot(box, aes(Var2,value)) + geom_boxplot() + ggtitle ("boxplot of UMI content"))
+          rk<-apply(-umiData,2,rank)
+          box <-  reshape2::melt(rk)
+          print(ggplot(box, aes(Var2,value)) + geom_boxplot() + ggtitle ("boxplot of gem rankings for UMI content"))
+
+          
+     }
+  
+  } #end of lane
+
+}
+
+
+```
+
